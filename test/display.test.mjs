@@ -130,3 +130,17 @@ test("the card carries the run's counters and the streak of a repeated call", ()
   renderProgress(summary, true);
   assert.deepEqual(summary, snapshot);
 });
+
+test("a cost too small to say, and a token count at the k/M boundary, both stay honest", () => {
+  // A cost that rounds to zero is the same silence as no cost: `$0.000` is the
+  // dead-instrument reading, wearing a decimal point.
+  const dust = formatProgress(started("ls", { path: "." }, usageOf(3, 20_000, 0.0004)), state(), "/repo");
+  assert.doesNotMatch(dust, /\$/);
+  assert.match(dust, /20k/);
+  // Real sub-cent money keeps its digits, and keeps no trailing zero.
+  assert.match(formatProgress(started("ls", {}, usageOf(3, 20_000, 0.004)), state(), "/repo"), /\$0\.004/);
+  assert.match(formatProgress(started("ls", {}, usageOf(3, 20_000, 0.0099)), state(), "/repo"), /\$0\.01(?!\d)/);
+  // The k bucket must not overflow into the number the M bucket owns.
+  assert.match(formatProgress(started("ls", {}, usageOf(1, 999_999)), state(), "/repo"), /ctx 1M$/m);
+  assert.match(formatProgress(started("ls", {}, usageOf(1, 999_949)), state(), "/repo"), /ctx 999\.9k$/m);
+});

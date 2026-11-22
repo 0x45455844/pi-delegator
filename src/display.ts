@@ -37,9 +37,21 @@ export interface ProgressSummary {
 
 function formatTokenCount(tokens: number): string {
   const trim = (text: string): string => text.replace(/\.0$/u, "");
-  if (tokens >= 1_000_000) return `${trim((tokens / 1_000_000).toFixed(1))}M`;
+  // Bucket on the value that will be printed, not the raw one: 999,950 rounds to
+  // "1.0" at one decimal, and a card reading `ctx 1000k` contradicts its own units.
+  if (tokens >= 999_950) return `${trim((tokens / 1_000_000).toFixed(1))}M`;
   if (tokens >= 1_000) return `${trim((tokens / 1_000).toFixed(1))}k`;
   return `${tokens}`;
+}
+
+/**
+ * Money, or nothing. A cost that rounds to zero says no more than no cost does, so
+ * it is omitted rather than printed as `$0.000` — and trailing zeros go, because a
+ * card is read at a glance.
+ */
+function formatCost(cost: number): string {
+  const digits = (cost >= 0.01 ? cost.toFixed(2) : cost.toFixed(3)).replace(/0+$/u, "").replace(/\.$/u, "");
+  return digits === "0" ? "" : `$${digits}`;
 }
 
 /** What the run is costing, in the order a watcher reads it: effort, then size, then money. */
@@ -48,7 +60,10 @@ function formatCounters(usage: UsageSummary | undefined): string {
   const parts: string[] = [];
   if (usage.turns > 0) parts.push(`${usage.turns} turn${usage.turns === 1 ? "" : "s"}`);
   if (usage.contextTokens > 0) parts.push(`ctx ${formatTokenCount(usage.contextTokens)}`);
-  if (usage.cost > 0) parts.push(`$${usage.cost >= 0.01 ? usage.cost.toFixed(2) : usage.cost.toFixed(3)}`);
+  if (usage.cost > 0) {
+    const cost = formatCost(usage.cost);
+    if (cost !== "") parts.push(cost);
+  }
   return parts.length === 0 ? "" : ` · ${parts.join(" · ")}`;
 }
 
