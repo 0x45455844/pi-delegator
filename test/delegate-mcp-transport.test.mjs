@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { realpathSync } from 'node:fs';
 import { DelegateMcpStdioTransport } from '../src/delegate-mcp-transport.ts';
 import { DELEGATE_CHILD_ENV, DELEGATE_BASH_CLEANUP_EXIT_CODE } from '../src/delegate-child-contract.ts';
 
@@ -34,7 +35,10 @@ test('RPC preserves argv/stdin, caller session, cwd and inherited env; close is 
     const { result } = await response;
     assert.deepEqual(result.argv, args);
     assert.deepEqual(result.params, { unicode: 'héllo' });
-    assert.equal(result.cwd, '/tmp');
+    // The transport hands the cwd down verbatim; the child reports what the OS says its
+    // working directory is, and on macOS `/tmp` is a symlink to `/private/tmp`. The thing
+    // under test is that the directory survived, not that its spelling did.
+    assert.equal(result.cwd, realpathSync('/tmp'));
     assert.equal(result.env.MCP_TEST_VALUE, 'value');
     assert.equal(result.env[DELEGATE_CHILD_ENV], undefined);
     assert.equal(result.env.PATH, process.env.PATH);
