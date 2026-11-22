@@ -107,6 +107,66 @@ if (scenario === "clean") {
   emit({ type: "agent_settled" });
 } else if (scenario === "no-answer") {
   emit({ type: "agent_settled" });
+} else if (scenario === "thinking-runaway") {
+  // Measured 9 Nov: the model spends the whole output budget on thinking and
+  // stops with `length` and no text; the agent loop settles and exits 0.
+  emit({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [{ type: "thinking", thinking: "planning the plan for the plan" }],
+      stopReason: "length",
+      usage: {
+        input: 40_000,
+        output: 16_384,
+        cacheRead: 40_672,
+        cacheWrite: 0,
+        totalTokens: 97_056,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+    },
+  });
+  emit({ type: "turn_end" });
+  emit({ type: "agent_settled" });
+} else if (scenario === "runaway-after-answer") {
+  // Measured 10 Nov: the child writes its report, takes one more turn, and that
+  // turn dies thinking-only. `turn_start` clears the answer, so without a
+  // salvage path the parent is told nothing was produced. It was.
+  emit({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: "1 changed: src/a.ts — gate green, 12 tests." }],
+      stopReason: "stop",
+      usage: {
+        input: 900,
+        output: 40,
+        cacheRead: 1_100,
+        cacheWrite: 0,
+        totalTokens: 2_040,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+    },
+  });
+  emit({ type: "turn_start" });
+  emit({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [{ type: "thinking", thinking: "and now it plans forever" }],
+      stopReason: "length",
+      usage: {
+        input: 1_200,
+        output: 16_384,
+        cacheRead: 2_040,
+        cacheWrite: 0,
+        totalTokens: 19_624,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+    },
+  });
+  emit({ type: "turn_end" });
+  emit({ type: "agent_settled" });
 } else if (scenario === "assistant-error" || scenario === "assistant-error-after-usage") {
   if (scenario === "assistant-error-after-usage") {
     emit({

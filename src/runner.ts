@@ -108,6 +108,14 @@ export interface DelegateFailure {
   readonly malformedLineCount: number;
   readonly exitCode: number | null;
   readonly nativeUsage: Usage;
+  /**
+   * Pi's own counters (turns, peak context) for the run that just died. Absent
+   * only when no child stream was read. These used to be reported as 0, which
+   * read as "the run did nothing" — a dead instrument is not a measurement.
+   */
+  readonly usage?: UsageSummary;
+  /** Last assistant text the child produced, when the run died after producing one. */
+  readonly partialText?: string;
   readonly cleanup: CleanupDetails;
 }
 
@@ -504,6 +512,13 @@ export async function runDelegate(options: RunDelegateOptions): Promise<Delegate
       parser.state.agentSettled ||
       (parser.state.finalText !== undefined && parser.state.assistantError === undefined);
 
+    // A report written before the fatal turn is the only work product there is;
+    // without it a 25-minute run that died mid-handoff returns literally nothing.
+    const salvagePartialText = (): { readonly partialText?: string } =>
+      parser.state.lastText === undefined
+        ? {}
+        : { partialText: truncateFinalText(parser.state.lastText).text };
+
     const armSemanticDrain = (): void => {
       if (finalizing) return;
       // An assistant error is not semantic completion: Pi may be waiting to
@@ -533,6 +548,8 @@ export async function runDelegate(options: RunDelegateOptions): Promise<Delegate
     const makeProcessOutcome = (cleanup: CleanupDetails): DelegateOutcome => {
       const durationMs = Date.now() - startedAt;
       const stderr = stderrTail.toString("utf8");
+      const usage = { ...parser.state.usage };
+      const partial = salvagePartialText();
       // Reserved child exits are lifecycle authority and must beat any
       // terminal answer that happened to reach stdout first.
       if (exitCode === DELEGATE_BASH_CLEANUP_EXIT_CODE || cleanup.diagnostic) {
@@ -545,6 +562,8 @@ export async function runDelegate(options: RunDelegateOptions): Promise<Delegate
           malformedLineCount: parser.state.malformedLineCount,
           exitCode,
           nativeUsage: cloneNativeUsage(parser.state.nativeUsage),
+          usage,
+          ...partial,
           cleanup,
         };
       }
@@ -558,6 +577,8 @@ export async function runDelegate(options: RunDelegateOptions): Promise<Delegate
           malformedLineCount: parser.state.malformedLineCount,
           exitCode,
           nativeUsage: cloneNativeUsage(parser.state.nativeUsage),
+          usage,
+          ...partial,
           cleanup,
         };
       }
@@ -571,6 +592,8 @@ export async function runDelegate(options: RunDelegateOptions): Promise<Delegate
           malformedLineCount: parser.state.malformedLineCount,
           exitCode,
           nativeUsage: cloneNativeUsage(parser.state.nativeUsage),
+          usage,
+          ...partial,
           cleanup,
         };
       }
@@ -589,15 +612,26 @@ export async function runDelegate(options: RunDelegateOptions): Promise<Delegate
           cleanup,
         };
       }
+      // A length stop with no text is a thinking runaway: the model spent the
+      // whole output budget on reasoning blocks and produced nothing
+      // actionable, so the agent loop ended naturally without an answer.
+      // Naming it here saves the next reader a 25-minute silent failure.
+      const runawayCutoff =
+        parser.state.stopReason === "length" && parser.state.finalText === undefined;
       return {
         ok: false,
         code: "missing_terminal_answer",
-        message: `${profileLabel} exited${exitCode === null ? "" : ` with code ${exitCode}`} before a terminal assistant answer`,
+        message: `${profileLabel} exited${exitCode === null ? "" : ` with code ${exitCode}`} before a terminal assistant answer${
+          runawayCutoff
+            ? `; the last response hit the output token limit (${parser.state.nativeUsage.output} output tokens) with only thinking blocks and no text — a reasoning runaway, not a network failure`
+            : ""}`,
         durationMs,
         stderr,
         malformedLineCount: parser.state.malformedLineCount,
         exitCode,
         nativeUsage: cloneNativeUsage(parser.state.nativeUsage),
+        usage,
+        ...partial,
         cleanup,
       };
     };
@@ -662,6 +696,8 @@ export async function runDelegate(options: RunDelegateOptions): Promise<Delegate
             malformedLineCount: parser.state.malformedLineCount,
             exitCode,
             nativeUsage: cloneNativeUsage(parser.state.nativeUsage),
+            usage: { ...parser.state.usage },
+            ...salvagePartialText(),
             cleanup,
           };
           break;
@@ -675,6 +711,8 @@ export async function runDelegate(options: RunDelegateOptions): Promise<Delegate
             malformedLineCount: parser.state.malformedLineCount,
             exitCode,
             nativeUsage: cloneNativeUsage(parser.state.nativeUsage),
+            usage: { ...parser.state.usage },
+            ...salvagePartialText(),
             cleanup,
           };
           break;
@@ -688,6 +726,8 @@ export async function runDelegate(options: RunDelegateOptions): Promise<Delegate
             malformedLineCount: parser.state.malformedLineCount,
             exitCode,
             nativeUsage: cloneNativeUsage(parser.state.nativeUsage),
+            usage: { ...parser.state.usage },
+            ...salvagePartialText(),
             cleanup,
           };
           break;
@@ -704,6 +744,8 @@ export async function runDelegate(options: RunDelegateOptions): Promise<Delegate
             malformedLineCount: parser.state.malformedLineCount,
             exitCode,
             nativeUsage: cloneNativeUsage(parser.state.nativeUsage),
+            usage: { ...parser.state.usage },
+            ...salvagePartialText(),
             cleanup,
           };
           break;

@@ -1128,3 +1128,47 @@ test("retains only the final 64 KiB of stderr diagnostics", async () => {
     assert.match(result.stderr, /END$/);
   });
 });
+
+test("a length-capped thinking-only answer is reported as a reasoning runaway", async () => {
+  await withTempDir(async (cwd) => {
+    const result = await runDelegate({
+      profile: SCOUT_PROFILE,
+      task: "Thinking runaway",
+      cwd,
+      env: fixtureEnv("thinking-runaway"),
+      cleanupGraceMs: 50,
+      cleanupVerifyMs: 100,
+      exitDrainMs: 20,
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.code, "missing_terminal_answer");
+    assert.match(result.message, /reasoning runaway/);
+    assert.match(result.message, /16384 output tokens/);
+    // The death record must carry the counters it has. They used to read 0, and
+    // 0 was read as "the run did nothing" for two rounds of post-mortem.
+    assert.equal(result.usage?.turns, 1);
+    assert.equal(result.usage?.contextTokens, 97_056);
+    assert.equal(result.partialText, undefined);
+  });
+});
+
+test("a run that answered before the fatal turn hands the report over", async () => {
+  await withTempDir(async (cwd) => {
+    const result = await runDelegate({
+      profile: SCOUT_PROFILE,
+      task: "Answer, then die",
+      cwd,
+      env: fixtureEnv("runaway-after-answer"),
+      cleanupGraceMs: 50,
+      cleanupVerifyMs: 100,
+      exitDrainMs: 20,
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.code, "missing_terminal_answer");
+    assert.equal(result.partialText, "1 changed: src/a.ts — gate green, 12 tests.");
+    assert.equal(result.usage?.turns, 2);
+    assert.equal(result.usage?.contextTokens, 19_624);
+  });
+});

@@ -17,6 +17,12 @@ export interface UsageSummary {
 
 export interface ProtocolState {
   finalText?: string;
+  /**
+   * Most recent assistant text with a terminal stop, kept across `turn_start`.
+   * `finalText` is the answer; this is the corpse — a run that answered, took
+   * one more turn and then died has nothing else to show for itself.
+   */
+  lastText?: string;
   assistantError?: string;
   stopReason?: string;
   agentSettled: boolean;
@@ -338,7 +344,11 @@ export class ProtocolParser {
     // Pi may retry transient provider failures inside the same child process. A
     // later non-error assistant turn supersedes the failed attempt.
     delete this.state.assistantError;
-    if (text !== undefined && isTerminalStop(stopReason)) this.state.finalText = text;
-    else delete this.state.finalText;
+    if (text !== undefined && isTerminalStop(stopReason)) {
+      this.state.finalText = text;
+      this.state.lastText = text;
+    } else {
+      delete this.state.finalText;
+    }
   }
 }

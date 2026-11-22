@@ -115,6 +115,8 @@ export interface DelegateDetails {
   readonly runId?: string;
   readonly backgroundStatus?: "started" | "waiting" | "completed" | "failed";
   readonly taskPreview?: string;
+  /** The failure carried a recovered report in its message (see `formatFailure`). */
+  readonly recoveredText?: boolean;
 }
 
 interface BackgroundFailureDetails {
@@ -134,7 +136,12 @@ function formatFailure(failure: DelegateFailure): string {
   const cleanupDiagnostic = failure.cleanup.diagnostic
     ? `\nCleanup diagnostic: ${failure.cleanup.diagnostic}`
     : "";
-  return `Delegate failed [${failure.code}] after ${failure.durationMs} ms: ${failure.message}${stderrDiagnostic}${cleanupDiagnostic}`;
+  // The child answered and then took one more turn, which is the shape that
+  // loses an answer. Hand the report over instead of throwing it away.
+  const recovered = failure.partialText
+    ? `\n\nRecovered report from before the run died (it did not end on this text):\n${failure.partialText}`
+    : "";
+  return `Delegate failed [${failure.code}] after ${failure.durationMs} ms: ${failure.message}${recovered}${stderrDiagnostic}${cleanupDiagnostic}`;
 }
 
 function successDetails(
@@ -337,9 +344,12 @@ function registerDelegateTool(
               cacheRead: result.nativeUsage.cacheRead,
               cacheWrite: result.nativeUsage.cacheWrite,
               cost: result.nativeUsage.cost.total,
-              contextTokens: 0,
-              turns: 0,
+              // Pi's counters, not zeros: a dead run is exactly where turns and
+              // peak context are worth reading, and 0 read as "it did nothing".
+              contextTokens: result.usage?.contextTokens ?? 0,
+              turns: result.usage?.turns ?? 0,
             }),
+            ...(result.partialText === undefined ? {} : { recoveredText: true }),
             cleanup: result.cleanup,
             malformedLineCount: result.malformedLineCount,
             exitCode: result.exitCode,
@@ -469,7 +479,20 @@ function registerDelegateTool(
       }
 
       if (!result.ok) {
-        recordFailedUsage(toolCallId, result.nativeUsage);
+        recordFailedUsage(toolCallId, result.nativeUsage, {
+          ...progressDetails(profile, model, thinking, result.durationMs, {
+            input: result.nativeUsage.input,
+            output: result.nativeUsage.output,
+            cacheRead: result.nativeUsage.cacheRead,
+            cacheWrite: result.nativeUsage.cacheWrite,
+            cost: result.nativeUsage.cost.total,
+            contextTokens: result.usage?.contextTokens ?? 0,
+            turns: result.usage?.turns ?? 0,
+          }),
+          ...(result.partialText === undefined ? {} : { recoveredText: true }),
+          malformedLineCount: result.malformedLineCount,
+          exitCode: result.exitCode,
+        });
         throw new Error(formatFailure(result));
       }
       return {

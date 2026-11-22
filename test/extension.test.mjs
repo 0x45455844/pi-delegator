@@ -767,18 +767,28 @@ test("tool_result accounts for billable child usage while runner failures still 
       details: undefined,
       isError: true,
     });
-    assert.deepEqual(patch, {
-      usage: {
-        input: 3,
-        output: 2,
-        cacheRead: 1,
-        cacheWrite: 4,
-        cacheWrite1h: 3,
-        reasoning: 1,
-        totalTokens: 6,
-        cost: { input: 0.003, output: 0.004, cacheRead: 0.001, cacheWrite: 0.002, total: 0.01 },
-      },
+    assert.deepEqual(patch.usage, {
+      input: 3,
+      output: 2,
+      cacheRead: 1,
+      cacheWrite: 4,
+      cacheWrite1h: 3,
+      reasoning: 1,
+      totalTokens: 6,
+      cost: { input: 0.003, output: 0.004, cacheRead: 0.001, cacheWrite: 0.002, total: 0.01 },
     });
+    // A failure records what the child measured, not nothing: without turns and
+    // peak context every post-mortem starts from a blank page.
+    const details = patch.details;
+    assert.ok(details);
+    assert.equal(details.agent, "scout");
+    assert.equal(details.thinking, "low");
+    assert.equal(details.model, "example/model");
+    assert.equal(details.usage.contextTokens, 6);
+    assert.equal(details.usage.turns, 2);
+    assert.equal(details.exitCode, 0);
+    assert.equal(details.recoveredText, undefined);
+    assert.equal(typeof details.durationMs, "number");
     assert.equal(await toolResult({ type: "tool_result", toolName: "delegate", toolCallId: "billed-failure" }), undefined);
   } finally {
     if (previousBinary === undefined) delete process.env.PI_DELEGATOR_PI_BINARY;
