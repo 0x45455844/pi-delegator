@@ -868,8 +868,8 @@ test("one-second ticks coalesce activity and usage, advance quiet elapsed time, 
     assert.ok(active.length >= 4, "real run must reach at least three display ticks");
     // Launch sampling may span the first tick; assert observed phases rather
     // than assuming the fixture started immediately when execute was called.
-    const first = active.findIndex((entry) => text(entry) === "Recent tool starts · 1 total\n→ read active.ts\n\nLatest commentary: active");
-    const second = active.findIndex((entry) => text(entry) === "Recent tool starts · 2 total\n· read active.ts\n→ grep\n\nLatest commentary: active follow-up");
+    const first = active.findIndex((entry) => text(entry) === "Recent tool starts · 1 total · 1 turn · $0.02\n→ read active.ts\n\nLatest commentary: active");
+    const second = active.findIndex((entry) => text(entry) === "Recent tool starts · 2 total · 2 turns · $0.03\n· read active.ts\n→ grep\n\nLatest commentary: active follow-up");
     assert.ok(first > 0 && second > first, "both activity phases must be rendered in order");
     assert.equal(active[first].update.details.usage.input, 7);
     assert.equal(active[first].update.details.usage.turns, 1);
@@ -1551,6 +1551,7 @@ test("static starts redraw only on settlement while parallel active and silent w
           const recentTools = frame.collapsed.includes("→ grep") ? ["read live-0.ts", "grep"]
             : frame.collapsed.includes("read live-0.ts") ? ["read live-0.ts"] : [];
           const progress = { totalCalls: recentTools.length, recentTools,
+            usage: frame.update.details.usage,
             ...(frame.collapsed.includes("Latest commentary:") ? {
               latestAssistantText: frame.collapsed.includes("live-0 follow-up") ? "live-0 follow-up" : "live-0",
             } : {}) };

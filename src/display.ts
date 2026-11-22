@@ -1,6 +1,7 @@
 import { relative, resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import type { DelegateProgress } from "./runner.ts";
+import type { UsageSummary } from "./protocol.ts";
 
 const RECENT_TOOL_LIMIT = 8;
 
@@ -19,6 +20,36 @@ export interface ProgressSummary {
   totalCalls: number;
   readonly recentTools: string[];
   latestAssistantText?: string;
+  /**
+   * Pi's own counters as of the most recent progress event. Absent until the child
+   * reports a turn: printing zeros would read as a run that did nothing, and every
+   * local engine bills 0 whatever it burns.
+   */
+  usage?: UsageSummary;
+  /**
+   * How many tool starts in a row carried the newest label. A delegate that repeats
+   * one command forever is the failure nobody is watching, and the label is the only
+   * thing the card has to notice it with — so two commands that truncate to the same
+   * display string count as one streak, which is what a reader would see anyway.
+   */
+  repeatStreak?: number;
+}
+
+function formatTokenCount(tokens: number): string {
+  const trim = (text: string): string => text.replace(/\.0$/u, "");
+  if (tokens >= 1_000_000) return `${trim((tokens / 1_000_000).toFixed(1))}M`;
+  if (tokens >= 1_000) return `${trim((tokens / 1_000).toFixed(1))}k`;
+  return `${tokens}`;
+}
+
+/** What the run is costing, in the order a watcher reads it: effort, then size, then money. */
+function formatCounters(usage: UsageSummary | undefined): string {
+  if (usage === undefined) return "";
+  const parts: string[] = [];
+  if (usage.turns > 0) parts.push(`${usage.turns} turn${usage.turns === 1 ? "" : "s"}`);
+  if (usage.contextTokens > 0) parts.push(`ctx ${formatTokenCount(usage.contextTokens)}`);
+  if (usage.cost > 0) parts.push(`$${usage.cost >= 0.01 ? usage.cost.toFixed(2) : usage.cost.toFixed(3)}`);
+  return parts.length === 0 ? "" : ` · ${parts.join(" · ")}`;
 }
 
 export function toolStartLabel(toolName: string, args: unknown, cwd: string): string {
@@ -38,10 +69,14 @@ export function toolStartLabel(toolName: string, args: unknown, cwd: string): st
 }
 
 export function formatProgress(progress: DelegateProgress, summary: ProgressSummary, cwd: string): string {
+  if (progress.usage !== undefined) summary.usage = { ...progress.usage };
   if (progress.type === "tool_start") {
+    const label = toolStartLabel(progress.toolName, progress.args, cwd);
+    const repeated = label === summary.recentTools.at(-1);
     summary.totalCalls += 1;
-    summary.recentTools.push(toolStartLabel(progress.toolName, progress.args, cwd));
+    summary.recentTools.push(label);
     if (summary.recentTools.length > RECENT_TOOL_LIMIT) summary.recentTools.shift();
+    summary.repeatStreak = repeated ? (summary.repeatStreak ?? 0) + 1 : 1;
   } else if (progress.text !== undefined) {
     const text = compactDisplayText(progress.text, 240);
     if (text) summary.latestAssistantText = text;
@@ -55,8 +90,12 @@ export function renderProgress(summary: ProgressSummary, expanded = false): stri
   const earlier = summary.totalCalls - displayedTools.length;
   const heading = summary.totalCalls === 0
     ? "No tool starts yet"
-    : `Recent tool starts · ${summary.totalCalls} total${earlier > 0 ? ` · ${earlier} earlier` : ""}`;
-  const rows = displayedTools.map((label, index) => `${index === displayedTools.length - 1 ? "→" : "·"} ${label}`);
+    : `Recent tool starts · ${summary.totalCalls} total${earlier > 0 ? ` · ${earlier} earlier` : ""}${formatCounters(summary.usage)}`;
+  const rows = displayedTools.map((label, index) => {
+    const newest = index === displayedTools.length - 1;
+    const streak = newest ? summary.repeatStreak ?? 0 : 0;
+    return `${newest ? "→" : "·"} ${label}${streak > 1 ? ` ×${streak}` : ""}`;
+  });
   if (summary.latestAssistantText !== undefined) rows.push("", `Latest commentary: ${summary.latestAssistantText}`);
   return [heading, ...rows].join("\n");
 }

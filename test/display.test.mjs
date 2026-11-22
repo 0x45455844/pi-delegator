@@ -5,6 +5,12 @@ import { compactDisplayText, formatProgress, renderProgress, terminalSafe, toolS
 const start = (toolName, args = {}) => ({ type: "tool_start", toolName, args });
 const message = (text) => ({ type: "assistant_message", text });
 const state = () => ({ totalCalls: 0, recentTools: [] });
+const usageOf = (turns, contextTokens, cost = 0) => ({
+  input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost, contextTokens, turns,
+});
+// The runner attaches Pi's counters to every progress event; these fixtures state
+// them explicitly so a test says which turn it is standing in.
+const started = (toolName, args, usage) => ({ type: "tool_start", toolName, args, usage });
 
 test("bash commands preserve shell syntax while remaining compact and terminal-safe", () => {
   assert.equal(toolStartLabel("bash", { command: "cd app &&\n pnpm test | tee result.txt" }, "/repo"), "bash cd app && pnpm test | tee result.txt");
@@ -74,7 +80,9 @@ test("collapsed and expanded boundaries count earlier starts against displayed r
       const earlier = count - visible;
       const expected = [
         `Recent tool starts · ${count} total${earlier ? ` · ${earlier} earlier` : ""}`,
-        ...Array.from({ length: visible }, (_, index) => `${index === visible - 1 ? "→" : "·"} read same`),
+        ...Array.from({ length: visible }, (_, index) => index === visible - 1
+          ? `→ read same${count > 1 ? ` ×${count}` : ""}`
+          : "· read same"),
       ].join("\n");
       assert.equal(renderProgress(summary, expanded), expected);
       if (!expanded) assert.equal(collapsed, expected);
@@ -82,4 +90,43 @@ test("collapsed and expanded boundaries count earlier starts against displayed r
     assert.deepEqual(summary, snapshot);
     assert.equal(summary.recentTools.length, Math.min(count, 8));
   }
+});
+
+test("the card carries the run's counters and the streak of a repeated call", () => {
+  const summary = state();
+  const loop = { command: "git show 714bcdc:strata-up | sed -n '520,530p'" };
+
+  // Nothing is invented before the child reports counters: turn one's first tool
+  // start carries zeros, and a card that said "0 turns" would read as a dead run.
+  assert.equal(
+    formatProgress(started("bash", loop, usageOf(0, 0)), summary, "/repo"),
+    "Recent tool starts · 1 total\n→ bash git show 714bcdc:strata-up | sed -n '520,530p'",
+  );
+
+  formatProgress(started("bash", loop, usageOf(12, 61_000)), summary, "/repo");
+  const card = formatProgress(started("bash", loop, usageOf(14, 83_800)), summary, "/repo");
+  assert.match(card, /^Recent tool starts · 3 total · 14 turns · ctx 83\.8k$/m);
+  assert.match(card, /→ bash git show 714bcdc:strata-up \| sed -n '520,530p' ×3$/m);
+  // A local engine bills nothing, so a cost of zero carries no information.
+  assert.doesNotMatch(card, /\$/);
+
+  // A different call ends the streak; the counters keep their own line of history.
+  const next = formatProgress(started("read", { path: "src/x.ts" }, usageOf(15, 84_100)), summary, "/repo");
+  assert.doesNotMatch(next, /×/);
+  assert.match(next, /ctx 84\.1k/);
+
+  // Token counts stay readable at every size, and a real cost is worth naming.
+  assert.match(formatProgress(started("ls", { path: "." }, usageOf(1, 940)), state(), "/repo"), /ctx 940$/m);
+  const paid = formatProgress(started("ls", { path: "." }, usageOf(2, 1_234_000, 0.42)), state(), "/repo");
+  assert.match(paid, /1\.2M/);
+  assert.match(paid, /\$0\.42/);
+  // Singular, because a person reads this line.
+  assert.match(formatProgress(started("ls", { path: "." }, usageOf(1, 1_000)), state(), "/repo"), /· 1 turn · ctx 1k$/m);
+
+  // Commentary refreshes the counters too, and rendering still mutates nothing.
+  formatProgress({ type: "assistant_message", text: "still looking", usage: usageOf(16, 85_000) }, summary, "/repo");
+  assert.match(renderProgress(summary), /16 turns/);
+  const snapshot = structuredClone(summary);
+  renderProgress(summary, true);
+  assert.deepEqual(summary, snapshot);
 });
