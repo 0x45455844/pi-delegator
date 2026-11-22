@@ -643,10 +643,9 @@ export default function piDelegator(pi: ExtensionAPI): void {
     runs = new BackgroundRuns(
       (outcome) => "error" in outcome || !outcome.result.ok,
       (runId, outcome) => {
-        // A run nobody waited for is exactly the run whose transcript gets read,
-        // so the failure notice names it. Only a failure has one to name.
-        // An uncollected run is exactly the run whose transcript gets read, so the
-        // notice names the file: data on the details, wording in the renderer.
+        // A run nobody waited for is exactly the run whose transcript gets read, so the
+        // notice names the file: data on the details, wording in the renderer. Only a
+        // run that failed has a transcript to name.
         const transcriptPath = "error" in outcome || outcome.result.ok
           ? undefined
           : outcome.result.transcriptPath;

@@ -174,7 +174,7 @@ export interface RunDelegateOptions {
   readonly env?: NodeJS.ProcessEnv;
   /** Private transcript directory override for fixtures. Empty disables the tee. */
   readonly transcriptDir?: string;
-  /** Called once with the transcript path as soon as the file exists, so a live card can name it. */
+  /** Called once with the transcript path as soon as its first byte is on disk, so a live card can name it. */
   readonly onTranscript?: (path: string) => void;
 }
 
