@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { existsSync, mkdtempSync, statSync } from "node:fs";
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 
@@ -23,6 +24,10 @@ import {
 import { isSupportedPlatform, runDelegate } from "../src/runner.ts";
 
 const execFileAsync = promisify(execFile);
+// A child that runs is a child that emits JSONL, and the tee writes it. Point the
+// default at a scratch directory so the suite never lands transcripts in the agent
+// directory it runs inside; tests that assert on the tee pass `transcriptDir`.
+process.env.PI_DELEGATOR_TRANSCRIPT_DIR ??= mkdtempSync(join(tmpdir(), "pi-delegator-transcripts-"));
 // Native macOS session sampling adds a bounded Python startup before child exec.
 const launchAllowanceMs = process.platform === "darwin" ? 1_000 : 0;
 const fixture = resolve("test/fixtures/fake-pi.mjs");
@@ -1170,5 +1175,128 @@ test("a run that answered before the fatal turn hands the report over", async ()
     assert.equal(result.partialText, "1 changed: src/a.ts — gate green, 12 tests.");
     assert.equal(result.usage?.turns, 2);
     assert.equal(result.usage?.contextTokens, 19_624);
+  });
+});
+
+test("a completed run leaves the transcript the parser consumed", async () => {
+  await withTempDir(async (cwd) => {
+    const directory = join(cwd, "delegate-logs");
+    const named = [];
+    const result = await runDelegate({
+      profile: SCOUT_PROFILE,
+      task: "Inspect auth",
+      cwd,
+      transcriptDir: directory,
+      onTranscript: (path) => named.push(path),
+      env: fixtureEnv("clean", { FAKE_PI_OUTPUT: "Scout result" }),
+      cleanupGraceMs: 50,
+      exitDrainMs: 20,
+    });
+
+    assert.equal(result.ok, true);
+    assert.ok(result.transcriptPath?.startsWith(`${directory}${sep}`));
+    assert.deepEqual(named, [result.transcriptPath]);
+    assert.match(basename(result.transcriptPath), /-scout\.jsonl$/u);
+
+    // The file is the stream, not a summary of it: the session line, the answer,
+    // and the settle all survive, in the order the child wrote them.
+    const lines = (await readFile(result.transcriptPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    assert.deepEqual(lines.map((line) => line.type), ["session", "message_end", "agent_settled"]);
+    assert.equal(lines[1].message.content[0].text, "Scout result");
+    assert.equal(statSync(result.transcriptPath).mode & 0o777, 0o600);
+  });
+});
+
+test("the transcript keeps the lines the parser refused", async () => {
+  await withTempDir(async (cwd) => {
+    const directory = join(cwd, "delegate-logs");
+    const result = await runDelegate({
+      profile: SCOUT_PROFILE,
+      task: "Noisy child",
+      cwd,
+      transcriptDir: directory,
+      env: fixtureEnv("malformed-then-clean"),
+      cleanupGraceMs: 50,
+      exitDrainMs: 20,
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.malformedLineCount, 1);
+    const written = await readFile(result.transcriptPath, "utf8");
+    assert.match(written, /^not-json\n/u);
+    assert.match(written, /valid after diagnostic/u);
+  });
+});
+
+test("a cancelled run names the transcript it got that far into", async () => {
+  await withTempDir(async (cwd) => {
+    const directory = join(cwd, "delegate-logs");
+    const controller = new AbortController();
+    const run = runDelegate({
+      profile: SCOUT_PROFILE,
+      task: "Cancel mid-work",
+      cwd,
+      signal: controller.signal,
+      transcriptDir: directory,
+      env: fixtureEnv("progress-then-hang"),
+      cleanupGraceMs: 100,
+      exitDrainMs: 20,
+    });
+    setTimeout(() => controller.abort(), 300);
+
+    const result = await run;
+    assert.equal(result.ok, false);
+    assert.equal(result.code, "cancelled");
+    const written = await readFile(result.transcriptPath, "utf8");
+    assert.match(written, /Reading the auth middleware/u);
+  });
+});
+
+test("a run that never launched claims no transcript", async () => {
+  await withTempDir(async (cwd) => {
+    const directory = join(cwd, "delegate-logs");
+    const result = await runDelegate({
+      profile: SCOUT_PROFILE,
+      task: "Spawn",
+      cwd,
+      transcriptDir: directory,
+      env: { ...process.env, PI_DELEGATOR_PI_BINARY: join(cwd, "missing-pi") },
+      cleanupGraceMs: 50,
+      exitDrainMs: 20,
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.code, "spawn_failed");
+    assert.equal(result.transcriptPath, undefined);
+    assert.equal(existsSync(directory), false);
+  });
+});
+
+test("the transcript directory is configurable and switchable off", async () => {
+  await withTempDir(async (cwd) => {
+    const directory = join(cwd, "from-env");
+    const configured = await runDelegate({
+      profile: SCOUT_PROFILE,
+      task: "Env dir",
+      cwd,
+      env: fixtureEnv("clean", { PI_DELEGATOR_TRANSCRIPT_DIR: directory }),
+      cleanupGraceMs: 50,
+      exitDrainMs: 20,
+    });
+    assert.equal(configured.ok, true);
+    assert.ok(configured.transcriptPath?.startsWith(`${directory}${sep}`));
+
+    const disabled = await runDelegate({
+      profile: SCOUT_PROFILE,
+      task: "Tee off",
+      cwd,
+      transcriptDir: "",
+      env: fixtureEnv("clean"),
+      cleanupGraceMs: 50,
+      exitDrainMs: 20,
+    });
+    assert.equal(disabled.ok, true);
+    assert.equal(disabled.text, "Scout result");
+    assert.equal(disabled.transcriptPath, undefined);
   });
 });

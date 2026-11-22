@@ -25,6 +25,11 @@ import {
   ProtocolParser,
   type UsageSummary,
 } from "./protocol.ts";
+import {
+  createTranscript,
+  transcriptDirectory,
+  transcriptFileName,
+} from "./transcript.ts";
 
 export const MAX_FINAL_TEXT_BYTES = 50 * 1024;
 export const MAX_STDERR_BYTES = 64 * 1024;
@@ -86,6 +91,11 @@ const NO_CLEANUP: CleanupDetails = Object.freeze({
   pipesClosed: true,
 });
 
+/** Name the transcript on whichever outcome the one finalization path produced. */
+function withTranscript(outcome: DelegateOutcome, path: string | undefined): DelegateOutcome {
+  return path === undefined ? outcome : { ...outcome, transcriptPath: path };
+}
+
 export interface DelegateSuccess {
   readonly ok: true;
   readonly text: string;
@@ -97,6 +107,13 @@ export interface DelegateSuccess {
   readonly usage: UsageSummary;
   readonly nativeUsage: Usage;
   readonly cleanup: CleanupDetails;
+  /**
+   * The child's stdout, copied to disk as the parser consumed it. The child runs
+   * `--no-session` because this stream IS its transcript, so without the copy a
+   * finished run leaves nothing behind to read. Absent only when nothing was
+   * written: a run that never launched, or one whose tee could not be opened.
+   */
+  readonly transcriptPath?: string;
 }
 
 export interface DelegateFailure {
@@ -117,6 +134,8 @@ export interface DelegateFailure {
   /** Last assistant text the child produced, when the run died after producing one. */
   readonly partialText?: string;
   readonly cleanup: CleanupDetails;
+  /** Where the run's transcript was written, when any byte of it reached disk. */
+  readonly transcriptPath?: string;
 }
 
 export type DelegateOutcome = DelegateSuccess | DelegateFailure;
@@ -153,6 +172,10 @@ export interface RunDelegateOptions {
   readonly semanticDrainMs?: number;
   /** Private child environment override for deterministic process fixtures. */
   readonly env?: NodeJS.ProcessEnv;
+  /** Private transcript directory override for fixtures. Empty disables the tee. */
+  readonly transcriptDir?: string;
+  /** Called once with the transcript path as soon as the file exists, so a live card can name it. */
+  readonly onTranscript?: (path: string) => void;
 }
 
 type FinalizeReason =
@@ -453,6 +476,16 @@ export async function runDelegate(options: RunDelegateOptions): Promise<Delegate
     let pipesClosed = false;
     let exitCode: number | null = null;
     let stderrTail: Buffer = Buffer.alloc(0);
+    // The tee is created on the first byte, so a launch that never happened
+    // claims no file; `close()` is what decides whether the outcome may name one.
+    const logDirectory = transcriptDirectory(options.transcriptDir, env);
+    const transcript = logDirectory === undefined
+      ? undefined
+      : createTranscript(
+          logDirectory,
+          transcriptFileName(options.profile.name, new Date(), process.pid),
+          options.onTranscript,
+        );
     let runTimer: NodeJS.Timeout | undefined;
     let exitDrainTimer: NodeJS.Timeout | undefined;
     let semanticDrainTimer: NodeJS.Timeout | undefined;
@@ -750,7 +783,9 @@ export async function runDelegate(options: RunDelegateOptions): Promise<Delegate
           };
           break;
       }
-      resolve(outcome);
+      // One finalization path owns every resource, and the transcript is one of
+      // them: closed here, named on the outcome only if a byte reached disk.
+      resolve(withTranscript(outcome, transcript?.close()));
     }
 
     const invocation = getPiInvocation(childArgs, env);
@@ -806,6 +841,10 @@ export async function runDelegate(options: RunDelegateOptions): Promise<Delegate
 
     spawned.stdout?.on("data", (data: Buffer) => {
       if (!acceptingOutput) return;
+      // Tee before the parser: a line the parser refuses is exactly the line a
+      // reader wants, and the file then holds what the child said, not what this
+      // parent was able to understand of it.
+      transcript?.write(data);
       try {
         parser.push(data);
         armSemanticDrain();

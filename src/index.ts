@@ -92,6 +92,8 @@ interface BackgroundMetadata {
   readonly progress: ProgressSummary;
   activity: string;
   usage: UsageSummary;
+  /** Where the run's transcript is being written, once the child has emitted a byte. */
+  transcriptPath?: string;
 }
 
 interface StartCardState {
@@ -117,6 +119,8 @@ export interface DelegateDetails {
   readonly taskPreview?: string;
   /** The failure carried a recovered report in its message (see `formatFailure`). */
   readonly recoveredText?: boolean;
+  /** The run's JSONL transcript on disk, when any byte of it was written. */
+  readonly transcriptPath?: string;
 }
 
 interface BackgroundFailureDetails {
@@ -133,6 +137,9 @@ function runBadge(runId: string): string {
 function formatFailure(failure: DelegateFailure): string {
   const stderr = failure.stderr.trim();
   const stderrDiagnostic = stderr ? `\nStderr tail:\n${stderr}` : "";
+  const transcriptDiagnostic = failure.transcriptPath === undefined
+    ? ""
+    : `\nTranscript: ${failure.transcriptPath}`;
   const cleanupDiagnostic = failure.cleanup.diagnostic
     ? `\nCleanup diagnostic: ${failure.cleanup.diagnostic}`
     : "";
@@ -141,7 +148,7 @@ function formatFailure(failure: DelegateFailure): string {
   const recovered = failure.partialText
     ? `\n\nRecovered report from before the run died (it did not end on this text):\n${failure.partialText}`
     : "";
-  return `Delegate failed [${failure.code}] after ${failure.durationMs} ms: ${failure.message}${recovered}${stderrDiagnostic}${cleanupDiagnostic}`;
+  return `Delegate failed [${failure.code}] after ${failure.durationMs} ms: ${failure.message}${recovered}${stderrDiagnostic}${transcriptDiagnostic}${cleanupDiagnostic}`;
 }
 
 function successDetails(
@@ -162,6 +169,7 @@ function successDetails(
     malformedLineCount: result.malformedLineCount,
     exitCode: result.exitCode,
     cleanup: result.cleanup,
+    ...(result.transcriptPath === undefined ? {} : { transcriptPath: result.transcriptPath }),
   };
 }
 
@@ -247,6 +255,11 @@ function formatRenderedResult(
   let header =
     theme.fg("toolTitle", theme.bold(compactDisplayText(profileLabel(details.agent, details.displayName), 64)));
   header += theme.fg("muted", ` · ${compactDisplayText(model, 256)} · ${compactDisplayText(details.thinking, 32)} · ${formatDuration(details.durationMs)}${isPartial ? " · Running" : details.backgroundStatus === "failed" ? " · Failed" : details.backgroundStatus === "completed" ? " · Completed" : ""}`);
+  // The transcript outlives the card, and the answer does not: when a run came
+  // back thin, the path is the one thing that lets a reader go look for themselves.
+  const transcriptLine = details.transcriptPath === undefined
+    ? ""
+    : theme.fg("muted", `\ntranscript ${details.transcriptPath}`);
   let renderedText = resultText(content);
   if (details.backgroundStatus === "failed" && details.runId !== undefined) {
     const prefix = `${profileLabel(details.agent, details.displayName)} · ${runBadge(details.runId)} · `;
@@ -259,7 +272,7 @@ function formatRenderedResult(
     expanded || isPartial,
     theme,
   );
-  return header + (output ? `\n${output}` : "");
+  return header + (output ? `\n${output}` : "") + transcriptLine;
 }
 
 async function resolveWorkingDirectory(requested: string | undefined, parentCwd: string): Promise<string> {
@@ -401,6 +414,9 @@ function registerDelegateTool(
               profile, task, cwd,
               ...(model === undefined ? {} : { model }),
               signal: ownedSignal,
+              onTranscript: (path) => {
+                metadata.transcriptPath = path;
+              },
               onProgress: (progress) => {
                 metadata.activity = formatProgress(progress, metadata.progress, cwd);
                 metadata.usage = progress.usage;
@@ -431,6 +447,7 @@ function registerDelegateTool(
       const startedAt = Date.now();
       const progressSummary: ProgressSummary = { totalCalls: 0, recentTools: [] };
       let latestText = "No tool starts yet";
+      let transcriptPath: string | undefined;
       let latestUsage: UsageSummary = {
         input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0,
       };
@@ -441,6 +458,7 @@ function registerDelegateTool(
             content: [{ type: "text", text: latestText }],
             details: {
               ...progressDetails(profile, model, thinking, now - startedAt, latestUsage),
+              ...(transcriptPath === undefined ? {} : { transcriptPath }),
               expandedProgress: renderProgress(progressSummary, true),
             },
           });
@@ -463,6 +481,9 @@ function registerDelegateTool(
           cwd,
           ...(model === undefined ? {} : { model }),
           ...(signal === undefined ? {} : { signal }),
+          onTranscript: (path) => {
+            transcriptPath = path;
+          },
           ...(onUpdate === undefined
             ? {}
             : {
@@ -490,6 +511,7 @@ function registerDelegateTool(
             turns: result.usage?.turns ?? 0,
           }),
           ...(result.partialText === undefined ? {} : { recoveredText: true }),
+          ...(result.transcriptPath === undefined ? {} : { transcriptPath: result.transcriptPath }),
           malformedLineCount: result.malformedLineCount,
           exitCode: result.exitCode,
         });
@@ -554,6 +576,13 @@ function registerDelegateTool(
         let text = theme.fg("toolTitle", theme.bold(label))
           + theme.fg("muted", ` · ${compactDisplayText(model, 256)} · ${compactDisplayText(details.thinking, 32)}`);
         text += theme.fg("muted", ` · ${status}${summary || snapshot?.settled ? ` · ${formatDuration(duration)}` : ""}`);
+        // A watcher wants the path while the run is still going: that is the only
+        // moment a `tail -f` can answer "what is it looping on". Once the run has
+        // settled the card keeps its compact summary and the collected result names
+        // the transcript instead.
+        if (running && metadata?.transcriptPath !== undefined) {
+          text += theme.fg("muted", `\ntranscript ${metadata.transcriptPath}`);
+        }
         return new Text(text, 0, 0);
       }
       const text = details === undefined

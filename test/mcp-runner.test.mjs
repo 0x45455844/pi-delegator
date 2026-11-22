@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { mkdtempSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -10,6 +11,8 @@ import { runDelegate } from "../src/runner.ts";
 
 const exec = promisify(execFile);
 const child = resolve("test/fixtures/real-pi-mcp-child.mjs");
+// Real children emit real JSONL; keep the tee out of the agent directory this suite runs in.
+process.env.PI_DELEGATOR_TRANSCRIPT_DIR ??= mkdtempSync(join(tmpdir(), "pi-delegator-transcripts-"));
 const server = resolve("test/fixtures/real-pi-mcp-server.mjs");
 await chmod(child, 0o755);
 const pause = ms => new Promise(resolveDelay => setTimeout(resolveDelay, ms));

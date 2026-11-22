@@ -108,6 +108,15 @@ Bash-enabled profiles load the private Bash extension first so its registration
 wins tool-name conflicts, including nested codemode calls.
 The environment is inherited with the private child marker overwritten;
 stdout/stderr are piped. Parent sessions and ambient capabilities are not passed.
+
+`--no-session` does not mean the run leaves nothing behind. The JSONL on the child's
+stdout IS its transcript and the parent is its only reader, so a Pi session file would
+advertise a run that cannot be resumed; the runner therefore tees that stream, byte for
+byte as the parser consumes it, to `<agent dir>/logs/delegate/<stamp>-<pid>-<profile>.jsonl`
+(`0600`, created on the first byte, never overwriting a taken name; `PI_DELEGATOR_TRANSCRIPT_DIR`
+relocates it and an empty value switches it off). The outcome names the path, and so does the
+card while the run is still going, because "what is that run looping on" is a question asked
+mid-flight. A tee that cannot be opened costs a log, never a run.
 Pi's normal coding prompt and project instructions remain active.
 
 ## Private Bash lifecycle

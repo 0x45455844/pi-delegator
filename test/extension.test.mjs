@@ -18,6 +18,11 @@ import { DELEGATE_CONFIG_FILENAME } from "../src/config.ts";
 import { compactDisplayText, renderProgress, terminalSafe } from "../src/display.ts";
 import piDelegator, { MAX_MODEL_BYTES, MAX_TASK_BYTES } from "../src/index.ts";
 
+// Fixture children emit real JSONL and the tee writes what it receives. Keep those
+// transcripts out of the agent directory this suite runs in; the tee itself is
+// covered by test/runner.test.mjs and test/transcript.test.mjs.
+process.env.PI_DELEGATOR_TRANSCRIPT_DIR ??= mkdtempSync(join(tmpdir(), "pi-delegator-transcripts-"));
+
 function registeredTool(config, session = {}) {
   const agentDirectory = mkdtempSync(join(tmpdir(), "pi-delegator-agent-dir-"));
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -217,6 +222,37 @@ test("renders selected delegate model and thinking metadata without changing res
   assert.doesNotMatch(missingDetailsCollapsed, /END/);
 
   assert.deepEqual(content, [{ type: "text", text: Array.from({ length: 12 }, (_, index) => `line ${index + 1}`).join("\n") }]);
+});
+
+test("the card names the transcript the run left on disk", () => {
+  const tool = registeredTool();
+  const content = [{ type: "text", text: "Gate green, 12 tests." }];
+  const details = {
+    agent: "reviewer",
+    model: "example/model",
+    thinking: "high",
+    durationMs: 4_000,
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+    truncated: false,
+    malformedLineCount: 0,
+    exitCode: 0,
+    cleanup: { forced: false, termSent: false, killSent: false, processExited: true, pipesClosed: true },
+  };
+
+  // No path in the details means nothing was written, and the card says nothing
+  // about a file that does not exist.
+  assert.doesNotMatch(
+    renderText(tool.renderResult({ content, details }, { expanded: false, isPartial: false }, plainTheme, {})),
+    /transcript/u,
+  );
+
+  const logged = renderText(tool.renderResult(
+    { content, details: { ...details, transcriptPath: "/agent/logs/delegate/run.jsonl" } },
+    { expanded: false, isPartial: false },
+    plainTheme,
+    {},
+  ));
+  assert.match(logged, /^Reviewer · model · high · 4s\nGate green, 12 tests\.\ntranscript \/agent\/logs\/delegate\/run\.jsonl$/m);
 });
 
 test("renders profile display names in calls and stored results without registry lookup", () => {
@@ -1278,7 +1314,9 @@ test("background success usage is collected once and foreground remains availabl
       assert.doesNotMatch(rendered, /#1|run-1/);
     }
     const collapsed = renderText(tool.renderResult(result, { expanded: false, isPartial: false }, plainTheme, {}));
-    assert.match(collapsed, /^Scout · model · low · \d+(?:\.\d+)?(?:ms|s) · Completed\nReview complete$/);
+    // The card ends by naming the transcript the run left behind: the answer is a
+    // summary, the file is the evidence.
+    assert.match(collapsed, /^Scout · model · low · \d+(?:\.\d+)?(?:ms|s) · Completed\nReview complete\ntranscript \S+-scout\.jsonl$/);
     assert.doesNotMatch(collapsed, /Usage:|Cleanup:|run-1|#1/);
     const expanded = renderText(tool.renderResult(result, { expanded: true, isPartial: false }, plainTheme, {}));
     assert.match(expanded, /example\/model · low · /);

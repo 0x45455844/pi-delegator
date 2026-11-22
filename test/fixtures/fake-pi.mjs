@@ -254,6 +254,19 @@ if (scenario === "clean") {
   });
   emit(finalMessage("answer after large tool result"));
   emit({ type: "agent_settled" });
+} else if (scenario === "progress-then-hang") {
+  // The run a reader most wants the transcript of: it worked, then stalled. The
+  // tee must already hold what it said by the time the parent gives up on it.
+  emit({ type: "session", id: "fixture" });
+  emit({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: "Reading the auth middleware" }],
+      stopReason: "toolUse",
+    },
+  });
+  setInterval(() => {}, 1000);
 } else if (scenario === "hang") {
   const timer = setInterval(() => {}, 1000);
   process.on("SIGTERM", () => {
