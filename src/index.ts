@@ -1,5 +1,7 @@
+import { existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
-import { resolve } from "node:path";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 
 import { StringEnum, type Usage } from "@earendil-works/pi-ai";
 import { type ExtensionAPI, type Theme } from "@earendil-works/pi-coding-agent";
@@ -273,6 +275,13 @@ function registerDelegateTool(
   runs: BackgroundRuns<BackgroundOutcome, BackgroundMetadata>,
   status: DelegateStatus,
 ): void {
+  // pi-home patch 02: a box that SERVES engines does not route work to them, and
+  // pi-home is shared between the machines, so "this box is the delegate target"
+  // cannot be a tracked setting. It is a file that exists on one of them:
+  // ~/.pi/agent/no-delegate. Bailing here means the tool is never registered, so
+  // its description, snippet and guidelines never enter the prompt of a session
+  // that has no use for them. The guard extension reads the same file.
+  if (existsSync(process.env.PI_DELEGATOR_OFF || join(homedir(), ".pi", "agent", "no-delegate"))) return;
   const DelegateParameters = createDelegateParameters(profiles, background);
   const profileSummary = Object.values(profiles)
     .map((profile) => `${profile.name} (${profile.description})`)
