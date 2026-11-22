@@ -128,6 +128,8 @@ interface BackgroundFailureDetails {
   readonly agent: string;
   readonly displayName?: string;
   readonly diagnostic: string;
+  /** Where the run's transcript is, when a byte of it reached disk. */
+  readonly transcriptPath?: string;
 }
 
 function runBadge(runId: string): string {
@@ -363,6 +365,7 @@ function registerDelegateTool(
               turns: result.usage?.turns ?? 0,
             }),
             ...(result.partialText === undefined ? {} : { recoveredText: true }),
+            ...(result.transcriptPath === undefined ? {} : { transcriptPath: result.transcriptPath }),
             cleanup: result.cleanup,
             malformedLineCount: result.malformedLineCount,
             exitCode: result.exitCode,
@@ -603,7 +606,8 @@ export default function piDelegator(pi: ExtensionAPI): void {
     const details = message.details;
     if (!details) return new Text(formatRenderedOutput(resultText(typeof message.content === "string" ? [{ type: "text", text: message.content }] : message.content), expanded, theme), 0, 0);
     const title = `${compactDisplayText(profileLabel(details.agent, details.displayName), 64)} · ${compactDisplayText(details.runId, 64)} · Failed`;
-    return new Text(theme.fg("error", theme.bold(title)) + "\n" + formatRenderedOutput(details.diagnostic, expanded, theme), 0, 0);
+    return new Text(theme.fg("error", theme.bold(title)) + "\n" + formatRenderedOutput(details.diagnostic, expanded, theme)
+      + (details.transcriptPath === undefined ? "" : theme.fg("muted", `\ntranscript ${details.transcriptPath}`)), 0, 0);
   });
 
   pi.on("tool_result", (event) => {
@@ -639,18 +643,26 @@ export default function piDelegator(pi: ExtensionAPI): void {
     runs = new BackgroundRuns(
       (outcome) => "error" in outcome || !outcome.result.ok,
       (runId, outcome) => {
+        // A run nobody waited for is exactly the run whose transcript gets read,
+        // so the failure notice names it. Only a failure has one to name.
+        // An uncollected run is exactly the run whose transcript gets read, so the
+        // notice names the file: data on the details, wording in the renderer.
+        const transcriptPath = "error" in outcome || outcome.result.ok
+          ? undefined
+          : outcome.result.transcriptPath;
         const diagnostic = "error" in outcome
           ? compactDisplayText(outcome.error, 1_000)
           : outcome.result.ok ? "" : `[${outcome.result.code}] ${compactDisplayText(outcome.result.message + (outcome.result.cleanup.diagnostic ? ` Cleanup: ${outcome.result.cleanup.diagnostic}` : ""), 1_000)}`;
         pi.sendMessage({
           customType: "pi-delegator-failure",
-          content: `${compactDisplayText(profileLabel(outcome.profile.name, outcome.profile.displayName), 64)} · ${runId} · Failed\nUncollected background delegate ${runId}: ${diagnostic}.`,
+          content: `${compactDisplayText(profileLabel(outcome.profile.name, outcome.profile.displayName), 64)} · ${runId} · Failed\nUncollected background delegate ${runId}: ${diagnostic}.${transcriptPath === undefined ? "" : ` Transcript: ${transcriptPath}.`}`,
           display: true,
           details: {
             runId,
             agent: outcome.profile.name,
             ...(outcome.profile.displayName === undefined ? {} : { displayName: outcome.profile.displayName }),
             diagnostic,
+            ...(transcriptPath === undefined ? {} : { transcriptPath }),
           } satisfies BackgroundFailureDetails,
         }, { triggerTurn: false });
       },

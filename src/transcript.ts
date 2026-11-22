@@ -50,14 +50,15 @@ export interface TranscriptHandle {
   readonly path: string;
   /** Append one raw chunk of child stdout. Never throws: a log is not worth a run. */
   write(chunk: Buffer): void;
-  /** Close the file, and report the path only when a file was actually written. */
+  /** Close the file, and report the path only when a byte was actually written. */
   close(): string | undefined;
 }
 
 /**
  * A lazily created append-only transcript. Nothing is created until the child
- * emits a byte, so a run that failed to launch claims no file, and the first
- * byte is reported through `onPath` so a live card can name it.
+ * emits a byte, so a run that failed to launch claims no file, and the first byte
+ * on disk is what `onPath` reports — a card that points at an empty file sends a
+ * reader to nothing.
  */
 export function createTranscript(
   directory: string,
@@ -66,7 +67,7 @@ export function createTranscript(
 ): TranscriptHandle {
   const path = join(directory, name);
   let fd: number | undefined;
-  let created = false;
+  let written = false;
   let broken = false;
   return {
     path,
@@ -76,10 +77,11 @@ export function createTranscript(
         if (fd === undefined) {
           mkdirSync(directory, { recursive: true });
           fd = openSync(path, "wx", 0o600);
-          created = true;
+        }
+        if (writeSync(fd, chunk) > 0 && !written) {
+          written = true;
           onPath?.(path);
         }
-        writeSync(fd, chunk);
       } catch {
         // Diagnostics never decide the run: an unwritable directory, a name
         // already taken, a full disk — drop the tee for good rather than
@@ -104,7 +106,7 @@ export function createTranscript(
         }
         fd = undefined;
       }
-      return created ? path : undefined;
+      return written ? path : undefined;
     },
   };
 }

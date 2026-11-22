@@ -64,6 +64,13 @@ test("a transcript that never wrote a byte names nothing, and a taken name is no
     assert.equal(quiet.close(), undefined);
     assert.equal(existsSync(quiet.path), false);
 
+    // An open that succeeded but wrote nothing is not a transcript a card may name.
+    const named = [];
+    const empty = createTranscript(root, "empty.jsonl", (path) => named.push(path));
+    empty.write(Buffer.alloc(0));
+    assert.deepEqual(named, []);
+    assert.equal(empty.close(), undefined);
+
     writeFileSync(join(root, "taken.jsonl"), "previous run\n");
     const collision = createTranscript(root, "taken.jsonl");
     collision.write(Buffer.from("mine\n"));

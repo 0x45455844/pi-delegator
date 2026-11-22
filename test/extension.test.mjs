@@ -1366,13 +1366,17 @@ test("waiting failure throws a Pi error and bills collected usage exactly once",
       const rendered = renderText(tool.renderResult({ content, details: patch.details },
         { expanded, isPartial: false }, plainTheme, {}));
       assert.equal(content[0].text, failureText, "rendering preserves model-facing diagnostics");
-      assert.ok(rendered.endsWith(failureText.slice("Scout · #1 · ".length)));
+      // A background failure names its transcript exactly as a foreground one does.
+      assert.match(patch.details.transcriptPath, /-scout\.jsonl$/u);
+      assert.ok(rendered.endsWith(`transcript ${patch.details.transcriptPath}`));
+      assert.ok(rendered.includes(failureText.slice("Scout · #1 · ".length)));
       const call = renderText(tool.renderCall({ action: "wait", runId }, plainTheme, { expanded }));
       assert.equal(call, `Delegate · Wait · ${runId}\n`);
       assert.doesNotMatch(rendered, /#1/);
       const unprefixed = renderText(tool.renderResult({ content: [{ type: "text", text: "Original Scout · #1 · diagnostic" }], details: patch.details },
         { expanded, isPartial: false }, plainTheme, {}));
-      assert.ok(unprefixed.endsWith("Original Scout · #1 · diagnostic"), "only the generated leading prefix is stripped");
+      assert.ok(unprefixed.endsWith(`transcript ${patch.details.transcriptPath}`), "only the generated leading prefix is stripped");
+      assert.ok(unprefixed.includes("Original Scout · #1 · diagnostic"), "only the generated leading prefix is stripped");
       assert.match(rendered, /^Scout · (?:example\/)?model · low · .* · Failed\n/);
       assert.match(rendered, /fixture model error/);
       assert.doesNotMatch(rendered, /run-1/);
@@ -1396,13 +1400,17 @@ for (const hasUI of [false, true]) {
       const { message, options } = session.messages[0];
       assert.equal(message.customType, "pi-delegator-failure");
       assert.equal(message.display, true);
-      assert.deepEqual(message.details, { runId, agent: "scout", diagnostic: "[child_error] fixture model error" });
+      const { transcriptPath, ...stableDetails } = message.details;
+      assert.deepEqual(stableDetails, { runId, agent: "scout", diagnostic: "[child_error] fixture model error" });
+      // The notice of a run nobody waited for names the transcript it left behind.
+      assert.match(transcriptPath, /-scout\.jsonl$/u);
+      assert.match(message.content, /Transcript: \S+-scout\.jsonl\./u);
       const renderer = session.messageRenderers.get(message.customType);
       assert.ok(renderer);
       const savedMessage = JSON.parse(JSON.stringify(message));
       for (const expanded of [false, true]) {
         const rendered = renderText(renderer(savedMessage, { expanded }, plainTheme));
-        assert.equal(rendered, "Scout · run-1 · Failed\n[child_error] fixture model error");
+        assert.equal(rendered, `Scout · run-1 · Failed\n[child_error] fixture model error\ntranscript ${transcriptPath}`);
         assert.doesNotMatch(rendered, /Collect with|#1/);
       }
       assert.match(message.content, /fixture model error/);
@@ -1422,15 +1430,17 @@ test("custom failure renderer uses saved profile details after collection and na
     assert.equal(runId, "run-1");
     await eventually(() => session.messages.length === 1);
     const saved = JSON.parse(JSON.stringify(session.messages[0].message));
-    assert.deepEqual(saved.details, {
+    const { transcriptPath, ...stableDetails } = saved.details;
+    assert.deepEqual(stableDetails, {
       runId, agent: "auditor", displayName: "Code Auditor", diagnostic: "[child_error] fixture model error",
     });
+    assert.match(transcriptPath, /-auditor\.jsonl$/u);
     const renderer = session.messageRenderers.get(saved.customType);
     const renderSaved = () => {
       for (const expanded of [false, true]) {
         // Rendering must rely on persisted details, not message text or a live run.
         const rendered = renderText(renderer({ ...saved, content: "unrelated fallback content" }, { expanded }, plainTheme));
-        assert.equal(rendered, "Code Auditor · run-1 · Failed\n[child_error] fixture model error");
+        assert.equal(rendered, `Code Auditor · run-1 · Failed\n[child_error] fixture model error\ntranscript ${transcriptPath}`);
         assert.doesNotMatch(rendered, /Collect with|#1/);
         assert.doesNotMatch(rendered, /unrelated fallback content/);
       }
@@ -1658,6 +1668,9 @@ for (const throwing of [false, true]) {
         assert.doesNotMatch(failed.expanded, /fixture model error|Usage:|Cleanup:/);
         assert.equal(card.state.summary.status, "Failed");
         assert.match(session.messages[0].message.content, /fixture model error/);
+        // An uncollected run is exactly the run whose transcript gets read, so the
+        // notice that nobody waited for names the file.
+        assert.match(session.messages[0].message.content, /Transcript: \S+-scout\.jsonl\./);
         assert.deepEqual(session.messages[0].options, { triggerTurn: false });
         await assert.rejects(waitBackground(tool, start.details.runId, "collect-live-failure"), /fixture model error/);
         const patch = await session.eventHandlers.get("tool_result")({ toolName: "delegate", toolCallId: "collect-live-failure", isError: true });
@@ -1665,6 +1678,9 @@ for (const throwing of [false, true]) {
         const diagnostics = renderText(tool.renderResult({ content: [{ type: "text", text: "fixture model error" }], details: patch.details },
           { expanded: true, isPartial: false }, plainTheme, {}));
         assert.match(diagnostics, /fixture model error/);
+        // The background failure card names the transcript as the foreground one does:
+        // a dead run is where a reader goes looking for what it actually said.
+        assert.match(diagnostics, /transcript \S+-scout\.jsonl/);
         assert.doesNotMatch(diagnostics, /Cleanup:/);
         assert.equal(card.draw().expanded, failed.expanded, "failure summary stays unchanged on collection");
         const count = card.frames.length;

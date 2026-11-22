@@ -1272,6 +1272,28 @@ test("a run that never launched claims no transcript", async () => {
   });
 });
 
+test("a transcript directory that cannot be created costs a log, not a run", async () => {
+  await withTempDir(async (cwd) => {
+    // A path under an ordinary file can never be a directory: every open fails.
+    const blocker = join(cwd, "blocked");
+    await writeFile(blocker, "");
+    const result = await runDelegate({
+      profile: SCOUT_PROFILE,
+      task: "Inspect auth",
+      cwd,
+      transcriptDir: join(blocker, "logs"),
+      env: fixtureEnv("clean"),
+      cleanupGraceMs: 50,
+      exitDrainMs: 20,
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.text, "Scout result");
+    assert.equal(result.transcriptPath, undefined);
+    assert.equal(existsSync(join(blocker, "logs")), false);
+  });
+});
+
 test("the transcript directory is configurable and switchable off", async () => {
   await withTempDir(async (cwd) => {
     const directory = join(cwd, "from-env");
